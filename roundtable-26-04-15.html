@@ -1,0 +1,1814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Under the Hood: Do You Actually Need to Look?</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+  :root {
+    --r-background-color: #0a0a0f;
+    --r-main-font: 'Inter', sans-serif;
+    --r-main-font-size: 32px;
+    --r-heading-font: 'Inter', sans-serif;
+    --r-heading-color: #f0f0f0;
+    --r-main-color: #d0d0d8;
+    --r-link-color: #4fc3f7;
+    --r-link-color-hover: #81d4fa;
+    --r-selection-background-color: #4fc3f7;
+    --r-heading-text-transform: none;
+    --accent: #4fc3f7;
+    --accent2: #ffb74d;
+    --accent3: #81c784;
+    --accent4: #e57373;
+    --dim: #6a6a7a;
+  }
+
+  .reveal { font-weight: 300; }
+  .reveal h1 { font-size: 2.2em; font-weight: 700; line-height: 1.15; }
+  .reveal h2 { font-size: 1.5em; font-weight: 600; margin-bottom: 0.6em; }
+  .reveal h3 { font-size: 1.1em; font-weight: 600; color: var(--accent); }
+  .reveal p { line-height: 1.6; }
+  .reveal ul, .reveal ol { margin-left: 0.5em; }
+  .reveal li { margin-bottom: 0.45em; line-height: 1.5; }
+  .reveal li li { font-size: 0.88em; color: var(--dim); margin-bottom: 0.2em; }
+  .reveal strong { color: #fff; font-weight: 600; }
+  .reveal em { color: var(--accent2); font-style: italic; }
+  .reveal code {
+    font-family: 'JetBrains Mono', monospace;
+    background: rgba(255,255,255,0.07);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+    font-size: 0.85em;
+    color: var(--accent3);
+  }
+
+  .reveal .subtitle { color: var(--accent); font-size: 0.55em; font-weight: 300; letter-spacing: 0.02em; }
+  .reveal .meta { color: var(--dim); font-size: 0.45em; margin-top: 1.2em; font-weight: 300; }
+  .reveal .tagline { color: var(--accent2); font-size: 0.6em; font-style: italic; margin-bottom: 1em; font-weight: 300; }
+
+  /* Diagram styles (legacy) */
+  .diagram {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin: 0.8em 0;
+    flex-wrap: wrap;
+  }
+  .diagram .box {
+    background: rgba(79, 195, 247, 0.1);
+    border: 1.5px solid var(--accent);
+    border-radius: 8px;
+    padding: 0.4em 0.7em;
+    font-size: 0.65em;
+    font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .diagram .box.highlight {
+    background: rgba(79, 195, 247, 0.2);
+    border-color: var(--accent2);
+    color: var(--accent2);
+  }
+  .diagram .arrow {
+    font-size: 0.8em;
+    color: var(--dim);
+    margin: 0 0.3em;
+  }
+
+  /* CPython-internals-style pipeline */
+  .pipeline-phase-label {
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-size: 0.45em;
+    font-weight: 700;
+    color: #60a5fa;
+    margin-bottom: 0.3em;
+  }
+  .pipeline-phase-divider {
+    max-width: 90%;
+    height: 1px;
+    margin: 0 auto 0.5em;
+    background: linear-gradient(90deg, transparent, #334155, transparent);
+  }
+  .pipeline-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 0;
+    margin: 0.3em 0 0.5em;
+    flex-wrap: nowrap;
+  }
+  .pipeline-stage {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    width: 130px;
+    min-width: 100px;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.3s ease;
+  }
+  .pipeline-stage:hover {
+    border-color: #334155;
+    transform: translateY(-2px);
+  }
+  .pipeline-stage.active {
+    border-color: #60a5fa;
+    box-shadow: 0 0 20px rgba(96,165,250,0.15);
+  }
+  .pipeline-stage-header {
+    padding: 0.3em 0.4em 0.2em;
+    display: flex;
+    align-items: center;
+    gap: 0.35em;
+  }
+  .pipeline-stage-num {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.4em;
+    flex-shrink: 0;
+  }
+  .pipeline-stage-num.c1 { background: #1e3a5f; color: #60a5fa; }
+  .pipeline-stage-num.c2 { background: #3b1f5e; color: #a78bfa; }
+  .pipeline-stage-num.c3 { background: #1a3d2e; color: #34d399; }
+  .pipeline-stage-num.c4 { background: #5e3b1f; color: #fbbf24; }
+  .pipeline-stage-num.c5 { background: #5e1f2e; color: #f87171; }
+  /* Runtime/execution phase colors */
+  .pipeline-stage-num.r1 { background: #4a1942; color: #f472b6; }
+  .pipeline-stage-num.r2 { background: #3d1a1a; color: #fb923c; }
+  .pipeline-stage-num.r3 { background: #1a3d4a; color: #22d3ee; }
+  .pipeline-stage.active.runtime-active {
+    border-color: #f472b6;
+    box-shadow: 0 0 20px rgba(244,114,182,0.15);
+  }
+  .pipeline-phase-label.execution { color: #f472b6; }
+  /* Infrastructure phase colors */
+  .pipeline-stage-num.i1 { background: #3d3a1a; color: #facc15; }
+  .pipeline-stage-num.i2 { background: #2e3d1a; color: #a3e635; }
+  .pipeline-stage.active.infra-active {
+    border-color: #facc15;
+    box-shadow: 0 0 20px rgba(250,204,21,0.12);
+  }
+  .pipeline-phase-label.infra { color: #facc15; }
+  .pipeline-stage-title {
+    font-weight: 600;
+    font-size: 0.5em;
+    color: #e0e0e0;
+  }
+  .pipeline-stage-desc {
+    padding: 0 0.4em 0.5em;
+    font-size: 0.38em;
+    color: #7a8ba8;
+    line-height: 1.4;
+  }
+  .pipeline-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    padding-top: 0.4em;
+    color: #334155;
+    flex-shrink: 0;
+  }
+  .pipeline-arrow svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* Detail panel (input → output) inside slide */
+  @keyframes slideDetailFadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .slide-detail-card {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 0.4em auto 0;
+    max-width: 95%;
+  }
+  .slide-detail-card.fade-in {
+    animation: slideDetailFadeIn 0.3s ease;
+  }
+  .slide-detail-top {
+    padding: 0.35em 0.6em 0.25em;
+    border-bottom: 1px solid #1e293b;
+    text-align: left;
+  }
+  .slide-detail-top .phase-tag {
+    display: inline-block;
+    font-size: 0.32em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 0.1em 0.4em;
+    border-radius: 3px;
+    font-weight: 700;
+    background: #1e3a5f;
+    color: #60a5fa;
+    margin-bottom: 0.15em;
+  }
+  .slide-detail-top .phase-tag.execution-tag {
+    background: #4a1942;
+    color: #f472b6;
+  }
+  .slide-detail-top .phase-tag.infra-tag {
+    background: #3d3a1a;
+    color: #facc15;
+  }
+  .slide-detail-top h3 {
+    font-size: 0.55em;
+    color: #e0e0e0;
+    margin: 0;
+  }
+  .slide-detail-top p {
+    font-size: 0.38em;
+    color: #7a8ba8;
+    line-height: 1.45;
+    margin: 0.15em 0 0;
+  }
+  .slide-detail-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .slide-detail-input,
+  .slide-detail-output {
+    padding: 0.3em 0.5em;
+    text-align: left;
+  }
+  .slide-detail-input {
+    border-right: 1px solid #1e293b;
+  }
+  .slide-detail-label {
+    font-size: 0.32em;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: #7a8ba8;
+    margin-bottom: 0.3em;
+    font-weight: 600;
+  }
+  .slide-detail-pre {
+    background: #0d1117;
+    border-radius: 6px;
+    padding: 0.3em 0.4em;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.36em;
+    line-height: 1.6;
+    color: #c9d1d9;
+    text-align: left;
+    white-space: pre;
+    overflow-x: auto;
+    margin: 0;
+  }
+  .slide-detail-pre .tok { color: #fbbf24; }
+  .slide-detail-pre .str { color: #a5d6ff; }
+  .slide-detail-pre .dim { color: #5a6a7f; }
+  .slide-detail-pre .node { color: #7ee787; }
+  .slide-detail-pre .fn { color: #d2a8ff; }
+  .slide-detail-pre .num { color: #79c0ff; }
+  .slide-detail-pre .cm { color: #5a6a7f; font-style: italic; }
+  .slide-detail-pre .kw { color: #ff7b72; }
+  .slide-detail-pre .bc { color: #60a5fa; }
+  .slide-detail-pre .arg { color: #ffa657; }
+  .slide-detail-pre .op { color: #ffa657; }
+  .slide-detail-pre .pk { color: #f472b6; }
+  .slide-detail-pre .cy { color: #22d3ee; }
+
+  /* Gradient heading for pipeline slide */
+  .gradient-heading {
+    font-size: 1.5em;
+    font-weight: 700;
+    background: linear-gradient(135deg, #60a5fa, #a78bfa, #f472b6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.3em;
+  }
+
+  /* Frame Stack interactive demo */
+  .fsd-layout {
+    display: grid;
+    grid-template-columns: 200px 1fr 220px;
+    gap: 0.4em;
+    padding: 0.3em 0.4em 0.4em;
+    min-height: 220px;
+  }
+  .fsd-panel {
+    background: #0d1117;
+    border-radius: 6px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .fsd-panel-title {
+    padding: 0.2em 0.35em;
+    font-size: 0.28em;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: #7a8ba8;
+    font-weight: 700;
+    border-bottom: 1px solid #1e293b;
+    font-family: 'Inter', sans-serif;
+  }
+  /* Source lines */
+  .fsd-source {
+    padding: 0.25em 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.32em;
+    line-height: 1.9;
+    flex: 1;
+  }
+  .fsd-src-line {
+    padding: 0 0.4em;
+    border-left: 2px solid transparent;
+    white-space: pre;
+    transition: background 0.3s, border-color 0.3s;
+  }
+  .fsd-src-line.active {
+    background: rgba(96, 165, 250, 0.1);
+    border-left-color: #60a5fa;
+  }
+  .fsd-src-line .fsd-ln { color: #3a4560; margin-right: 0.8em; user-select: none; }
+  /* Frame visualization */
+  .fsd-frames {
+    flex: 1;
+    display: flex;
+    flex-direction: column-reverse;
+    justify-content: flex-start;
+    padding: 0.25em;
+    gap: 0;
+    overflow: hidden;
+  }
+  .fsd-frame {
+    border-radius: 6px;
+    overflow: hidden;
+    margin-bottom: 0.25em;
+    transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  .fsd-frame.visible { opacity: 1; transform: translateY(0) scale(1); }
+  .fsd-frame.inactive { opacity: 0.4; transform: scale(0.97); }
+  .fsd-frame.popping {
+    opacity: 0; transform: translateY(-30px) scale(0.9);
+    transition: all 0.35s cubic-bezier(0.6, -0.28, 0.74, 0.05);
+  }
+  .fsd-frame-hdr {
+    padding: 0.15em 0.3em;
+    font-weight: 700;
+    font-size: 0.3em;
+    display: flex;
+    align-items: center;
+    gap: 0.3em;
+  }
+  .fsd-frame-badge {
+    width: 16px; height: 16px;
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.65em; font-weight: 800;
+  }
+  .fsd-frame-body {
+    padding: 0 0.3em 0.2em;
+    display: flex;
+    gap: 0.5em;
+    font-size: 0.28em;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .fsd-frame-locals, .fsd-frame-vstack { flex: 1; }
+  .fsd-frame-subtitle {
+    font-size: 0.85em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #7a8ba8;
+    margin-bottom: 0.15em;
+    font-weight: 600;
+    font-family: 'Inter', sans-serif;
+  }
+  .fsd-vstack-item {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin: 1px 2px 1px 0;
+    font-weight: 600;
+    font-size: 0.95em;
+  }
+  /* Frame color themes */
+  .fsd-module { background: #0f1d2e; border: 1px solid #1e3a5f; }
+  .fsd-module .fsd-frame-hdr { background: #132b47; color: #60a5fa; }
+  .fsd-module .fsd-frame-badge { background: #1e3a5f; color: #60a5fa; }
+  .fsd-module .fsd-vstack-item { background: #1e3a5f; color: #93c5fd; }
+  .fsd-fn { background: #1a0f2e; border: 1px solid #3b1f5e; }
+  .fsd-fn .fsd-frame-hdr { background: #25154a; color: #a78bfa; }
+  .fsd-fn .fsd-frame-badge { background: #3b1f5e; color: #a78bfa; }
+  .fsd-fn .fsd-vstack-item { background: #3b1f5e; color: #c4b5fd; }
+  /* Narration */
+  .fsd-narration-body {
+    padding: 0.25em 0.35em;
+    flex: 1;
+    overflow-y: auto;
+  }
+  .fsd-narr-step {
+    font-size: 0.3em;
+    line-height: 1.5;
+    color: #c9d1d9;
+    margin-bottom: 0.3em;
+    font-family: 'Inter', sans-serif;
+  }
+  .fsd-opcode {
+    display: inline-block;
+    background: #1e293b;
+    padding: 0px 5px;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.95em;
+    color: #60a5fa;
+    font-weight: 600;
+  }
+  .fsd-hl { color: #fbbf24; font-weight: 600; }
+  .fsd-return-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.95em;
+  }
+  /* Controls bar */
+  .fsd-controls {
+    display: flex;
+    gap: 0.3em;
+    align-items: center;
+    justify-content: center;
+    padding: 0.25em 0.4em;
+    border-top: 1px solid #1e293b;
+  }
+  .fsd-btn {
+    padding: 0.15em 0.5em;
+    border: 1px solid #334155;
+    border-radius: 5px;
+    background: #111827;
+    color: #e0e0e0;
+    font-size: 0.3em;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+    transition: all 0.2s;
+  }
+  .fsd-btn:hover { background: #1e293b; border-color: #475569; }
+  .fsd-btn-primary {
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    border: none; color: white;
+  }
+  .fsd-btn-primary:hover { opacity: 0.9; }
+  .fsd-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .fsd-step-counter {
+    font-size: 0.28em;
+    color: #5a6a7f;
+    padding: 0 0.3em;
+    font-variant-numeric: tabular-nums;
+  }
+  .fsd-progress-track {
+    flex: 1;
+    max-width: 150px;
+    height: 2px;
+    background: #1e293b;
+    border-radius: 1px;
+    overflow: hidden;
+  }
+  .fsd-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #3b82f6, #8b5cf6, #f472b6);
+    border-radius: 1px;
+    transition: width 0.4s ease;
+  }
+
+  /* Ingredients slide - two-card layout */
+  .ingredients-row {
+    display: flex;
+    justify-content: center;
+    gap: 1.2em;
+    margin: 0.5em 0 0;
+    align-items: stretch;
+  }
+  .ingredient-card {
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    flex: 1;
+    max-width: 520px;
+    text-align: left;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .ingredient-card-header {
+    padding: 0.4em 0.55em 0.3em;
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    border-bottom: 1px solid #1e293b;
+  }
+  .ingredient-card-icon {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.55em;
+    flex-shrink: 0;
+    font-weight: 700;
+  }
+  .ingredient-card-header h3 {
+    font-size: 0.55em;
+    color: #e0e0e0;
+    margin: 0;
+  }
+  .ingredient-card-header .card-status {
+    margin-left: auto;
+    font-size: 0.32em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 0.15em 0.45em;
+    border-radius: 3px;
+    font-weight: 700;
+  }
+  .ingredient-card-body {
+    padding: 0.35em 0.55em 0.45em;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .ingredient-card-body p {
+    font-size: 0.38em;
+    color: #7a8ba8;
+    line-height: 1.5;
+    margin: 0 0 0.3em;
+  }
+  .ingredient-card-body .ingredient-pre {
+    background: #0d1117;
+    border-radius: 6px;
+    padding: 0.3em 0.45em;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.36em;
+    line-height: 1.6;
+    color: #c9d1d9;
+    white-space: pre;
+    margin: auto 0 0;
+  }
+  .ingredient-card-body .component-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.15em 0.6em;
+    margin-top: 0.2em;
+  }
+  .ingredient-card-body .component-grid .comp-item {
+    font-size: 0.36em;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 0.2em 0;
+    color: #c9d1d9;
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+  }
+  .ingredient-card-body .component-grid .comp-item .comp-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* Stack diagram */
+  .stack-diagram {
+    display: flex;
+    justify-content: center;
+    gap: 2em;
+    margin: 0.6em 0;
+    font-size: 0.6em;
+  }
+  .stack-step { text-align: center; }
+  .stack-step .label { color: var(--accent3); font-family: 'JetBrains Mono', monospace; font-size: 0.85em; margin-bottom: 0.4em; }
+  .stack-frame {
+    border: 1.5px solid var(--dim);
+    border-radius: 6px;
+    min-width: 120px;
+    overflow: hidden;
+  }
+  .stack-frame .cell {
+    padding: 0.3em 0.6em;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    color: var(--accent);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9em;
+  }
+  .stack-frame .cell:last-child { border-bottom: none; }
+  .stack-frame .cell.empty { color: var(--dim); font-style: italic; }
+  .stack-frame .bottom-label { color: var(--dim); font-size: 0.75em; padding: 0.2em 0.6em; background: rgba(255,255,255,0.03); }
+
+  /* PyObject diagram */
+  .struct-diagram {
+    display: flex;
+    justify-content: center;
+    gap: 1.5em;
+    margin: 0.6em 0;
+    font-size: 0.6em;
+  }
+  .struct-box {
+    border: 1.5px solid var(--accent);
+    border-radius: 8px;
+    overflow: hidden;
+    min-width: 180px;
+  }
+  .struct-box .struct-title {
+    background: rgba(79, 195, 247, 0.15);
+    padding: 0.35em 0.7em;
+    font-weight: 600;
+    color: var(--accent);
+    font-family: 'JetBrains Mono', monospace;
+    text-align: center;
+    font-size: 0.95em;
+  }
+  .struct-box .field {
+    padding: 0.3em 0.7em;
+    border-top: 1px solid rgba(79, 195, 247, 0.15);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85em;
+    color: var(--main-color, #d0d0d8);
+  }
+  .struct-box .field .fname { color: var(--accent2); }
+  .struct-box .field .fval { color: var(--accent3); }
+
+  /* GIL timeline */
+  .gil-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3em;
+    margin: 0.6em auto;
+    max-width: 700px;
+    font-size: 0.55em;
+  }
+  .gil-row {
+    display: flex;
+    align-items: center;
+    gap: 0.3em;
+  }
+  .gil-label { width: 80px; text-align: right; color: var(--dim); font-weight: 600; font-size: 0.95em; }
+  .gil-bar {
+    flex: 1;
+    display: flex;
+    height: 28px;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .gil-segment {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8em;
+    font-weight: 600;
+    color: #0a0a0f;
+  }
+  .gil-segment.running { background: var(--accent); }
+  .gil-segment.waiting { background: rgba(255,255,255,0.06); color: var(--dim); }
+  .gil-segment.io { background: var(--accent3); }
+
+  /* Import flowchart */
+  .flow-diagram {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin: 0.5em 0;
+    flex-wrap: wrap;
+    font-size: 0.58em;
+  }
+  .flow-diagram .fbox {
+    border: 1.5px solid var(--accent);
+    border-radius: 8px;
+    padding: 0.3em 0.6em;
+    font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .flow-diagram .fbox.decision {
+    border-color: var(--accent2);
+    color: var(--accent2);
+    transform: rotate(0deg);
+    border-style: dashed;
+  }
+  .flow-diagram .fbox.action { border-color: var(--accent3); color: var(--accent3); }
+  .flow-diagram .farrow { color: var(--dim); margin: 0 0.2em; font-size: 1.1em; }
+
+  /* Table styles */
+  .reveal table { margin: 0.5em auto; font-size: 0.62em; border-collapse: collapse; }
+  .reveal table th {
+    background: rgba(79, 195, 247, 0.12);
+    color: var(--accent);
+    font-weight: 600;
+    padding: 0.5em 0.8em;
+    border-bottom: 2px solid var(--accent);
+    text-align: left;
+  }
+  .reveal table td {
+    padding: 0.4em 0.8em;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    color: var(--main-color, #d0d0d8);
+    vertical-align: top;
+  }
+  .reveal table tr:last-child td { border-bottom: none; }
+
+  /* Cycle diagram */
+  .cycle-diagram {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1em;
+    margin: 0.5em 0;
+    font-size: 0.65em;
+  }
+  .cycle-node {
+    width: 60px; height: 60px;
+    border: 2px solid var(--accent4);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; color: var(--accent4);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .cycle-arrows { color: var(--accent4); font-size: 1.5em; display: flex; flex-direction: column; gap: 0.2em; line-height: 1; }
+
+  /* Discussion prompts */
+  .prompt-list { text-align: left; max-width: 700px; margin: 0 auto; }
+  .prompt-list li {
+    color: var(--accent2);
+    margin-bottom: 0.5em;
+    font-size: 0.72em;
+    line-height: 1.5;
+  }
+
+  /* Slide number */
+  .reveal .slide-number { font-family: 'JetBrains Mono', monospace; font-size: 0.5em; color: var(--dim); right: auto; left: 8px; }
+
+  /* Fragment highlight */
+  .reveal .fragment.highlight-current-blue.current-fragment { color: var(--accent); }
+
+  /* Override for notes */
+  .reveal aside.notes { font-size: 0.7em; }
+
+  /* Responsive tweaks */
+  .reveal .slides section { padding: 0.5em; }
+</style>
+</head>
+<body>
+
+<div class="reveal">
+<div class="slides">
+
+<!-- ============ SLIDE 1: TITLE ============ -->
+<section>
+  <h1>Under the Hood:<br>Do You Actually Need to Look?</h1>
+  <p class="subtitle">A Whistle-Stop Refresher of CPython Internals - then the bigger conversation of comparing understanding v abstraction</p>
+  <p class="meta">15 May 2026<br>Python Leadership Roundtable<br>Alex Hatfield</p>
+  <aside class="notes">
+    Set the frame early - this isn't a "you should all learn C" talk. It's a tour, and then a question.
+    We'll spend about 20 minutes on the internals, then open up the real discussion: does knowing this
+    stuff actually make you better at your job?
+  </aside>
+</section>
+
+<!-- ============ SLIDE 1b: INGREDIENTS ============ -->
+<section>
+  <h2 class="gradient-heading" style="background: linear-gradient(135deg, #34d399, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">The Ingredients of a Running Program</h2>
+  <p style="color: #7a8ba8; font-size: 0.50em; margin-bottom: 0.15em;">To execute Python, you only need two things. You wrote one of them.</p>
+
+  <div class="ingredients-row">
+
+    <!-- INGREDIENT 1: Source Code -->
+    <div class="ingredient-card">
+      <div class="ingredient-card-header">
+        <div class="ingredient-card-icon" style="background: #1a3d2e; color: #34d399;">1</div>
+        <h3>Your Source Code</h3>
+        <span class="card-status" style="background: #1a3d2e; color: #34d399;">You write this</span>
+      </div>
+      <div class="ingredient-card-body">
+        <p>A plain text file written in Python syntax. At this stage it&rsquo;s just characters - the computer has no idea what it <em style="color: #ffb74d;">means</em>.</p>
+        <div class="ingredient-pre"><span style="color: #5a6a7f; font-style: italic;"># example.py</span>
+<span style="color: #ff7b72;">x</span> <span style="color: #ffa657;">=</span> <span style="color: #79c0ff;">42</span> <span style="color: #ffa657;">+</span> <span style="color: #ff7b72;">y</span></div>
+      </div>
+    </div>
+
+    <!-- INGREDIENT 2: CPython Binary -->
+    <div class="ingredient-card">
+      <div class="ingredient-card-header">
+        <div class="ingredient-card-icon" style="background: #1e3a5f; color: #60a5fa;">2</div>
+        <h3>The CPython Binary <span style="font-weight: 400; color: #7a8ba8; font-size: 0.85em;">(the engine)</span></h3>
+        <span class="card-status" style="background: #1e3a5f; color: #60a5fa;">Already installed</span>
+      </div>
+      <div class="ingredient-card-body">
+        <p>A pre-compiled C program (<code style="color: #a78bfa; background: none; padding: 0; font-size: 0.95em;">python3</code>) - originally built from ~500k lines of C source into native machine code. It contains <em style="color: #ffb74d;">everything</em> needed to compile and run your code:</p>
+        <div class="component-grid">
+          <div class="comp-item"><span class="comp-dot" style="background: #60a5fa;"></span> Tokenizer</div>
+          <div class="comp-item"><span class="comp-dot" style="background: #fb923c;"></span> Eval Loop</div>
+          <div class="comp-item"><span class="comp-dot" style="background: #a78bfa;"></span> Parser</div>
+          <div class="comp-item"><span class="comp-dot" style="background: #fb923c;"></span> ~160 Handlers</div>
+          <div class="comp-item"><span class="comp-dot" style="background: #34d399;"></span> Compiler</div>
+          <div class="comp-item"><span class="comp-dot" style="background: #facc15;"></span> Object System</div>
+          <div class="comp-item"><span class="comp-dot" style="background: #f87171;"></span> .pyc Cache</div>
+          <div class="comp-item"><span class="comp-dot" style="background: #facc15;"></span> Memory Allocator</div>
+          <div class="comp-item"><span class="comp-dot" style="background: #f472b6;"></span> Frame Stack</div>
+          <div class="comp-item"><span class="comp-dot" style="background: #a3e635;"></span> GC &amp; GIL</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <p style="font-size: 0.42em; color: #5a6a7f; margin-top: 0.5em; text-align: center;">
+    <code style="color: #34d399; background: none; padding: 0; font-size: 1em;">python3 example.py</code>
+    <span style="margin: 0 0.5em;">&rarr;</span>
+    ingredient 2 reads ingredient 1, and the rest of this talk happens.
+  </p>
+
+  <aside class="notes">
+    This is the "before we dive in" framing slide. The point: when you type python3 example.py,
+    you're feeding a text file into a 500k-line C program. That C program IS the interpreter.
+    Everything we're about to walk through - the tokenizer, parser, compiler, eval loop, object
+    system, memory management - all lives inside that one binary. Your source code is just the input.
+    The component list here is a preview - we'll click into each one over the next few slides.
+    The color dots intentionally match the stage colors in the pipeline slides that follow.
+  </aside>
+</section>
+
+<!-- ============ SLIDE 2: COMPILER PIPELINE ============ -->
+<section>
+  <h2 class="gradient-heading">From Source to Bytecode</h2>
+  <p style="color: #7a8ba8; font-size: 0.55em; margin-bottom: 0.3em;">Your <code style="color: #a78bfa;">x = 42 + y</code> has a longer journey than you think</p>
+
+  <div class="pipeline-phase-label">Compilation Phase</div>
+  <div class="pipeline-phase-divider"></div>
+
+  <div class="pipeline-row" id="pipeline-row">
+    <div class="pipeline-stage active" data-stage="0">
+      <div class="pipeline-stage-header">
+        <div class="pipeline-stage-num c1">1</div>
+        <div class="pipeline-stage-title">Tokenizer</div>
+      </div>
+      <div class="pipeline-stage-desc">Breaks source into a stream of tokens</div>
+    </div>
+    <div class="pipeline-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 5l7 7-7 7"/></svg></div>
+    <div class="pipeline-stage" data-stage="1">
+      <div class="pipeline-stage-header">
+        <div class="pipeline-stage-num c2">2</div>
+        <div class="pipeline-stage-title">Parser</div>
+      </div>
+      <div class="pipeline-stage-desc">Builds an Abstract Syntax Tree from tokens</div>
+    </div>
+    <div class="pipeline-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 5l7 7-7 7"/></svg></div>
+    <div class="pipeline-stage" data-stage="2">
+      <div class="pipeline-stage-header">
+        <div class="pipeline-stage-num c3">3</div>
+        <div class="pipeline-stage-title">Optimizer</div>
+      </div>
+      <div class="pipeline-stage-desc">Constant folding &amp; simple optimizations</div>
+    </div>
+    <div class="pipeline-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 5l7 7-7 7"/></svg></div>
+    <div class="pipeline-stage" data-stage="3">
+      <div class="pipeline-stage-header">
+        <div class="pipeline-stage-num c4">4</div>
+        <div class="pipeline-stage-title">Compiler</div>
+      </div>
+      <div class="pipeline-stage-desc">Emits stack-based bytecode instructions</div>
+    </div>
+    <div class="pipeline-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 5l7 7-7 7"/></svg></div>
+    <div class="pipeline-stage" data-stage="4">
+      <div class="pipeline-stage-header">
+        <div class="pipeline-stage-num c5">5</div>
+        <div class="pipeline-stage-title">.pyc Cache</div>
+      </div>
+      <div class="pipeline-stage-desc">Serializes code object to skip recompilation</div>
+    </div>
+  </div>
+
+  <div class="slide-detail-card" id="pipeline-detail">
+    <div class="slide-detail-top" id="pipeline-detail-top"></div>
+    <div class="slide-detail-body">
+      <div class="slide-detail-input">
+        <div class="slide-detail-label" id="pipeline-input-label">Input</div>
+        <div class="slide-detail-pre" id="pipeline-input-code"></div>
+      </div>
+      <div class="slide-detail-output">
+        <div class="slide-detail-label" id="pipeline-output-label">Output</div>
+        <div class="slide-detail-pre" id="pipeline-output-code"></div>
+      </div>
+    </div>
+  </div>
+
+  <aside class="notes">
+    Most people think Python is "interpreted." It is - but it's compiled first. Just not to machine code.
+    It's compiled to bytecode, which is then interpreted by the VM. The key insight: by the time your code
+    runs, it doesn't look anything like what you typed. dis.dis() is genuinely fun to play with - encourage
+    people to try it. The five-stage pipeline mirrors the CPython internals reference: tokenize, parse to AST,
+    optimize, compile to bytecode, cache to .pyc.
+  </aside>
+</section>
+
+<!-- ============ SLIDE 2b: EXECUTION PIPELINE ============ -->
+<section>
+  <h2 class="gradient-heading" style="background: linear-gradient(135deg, #f472b6, #fb923c, #22d3ee); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">Running the Bytecode</h2>
+  <p style="color: #7a8ba8; font-size: 0.55em; margin-bottom: 0.3em;">From the eval loop to the frame stack - how <code style="color: #f472b6;">x = 42 + y</code> actually executes</p>
+
+  <div class="pipeline-phase-label execution">Execution Phase</div>
+  <div class="pipeline-phase-divider"></div>
+
+  <div class="pipeline-row" id="exec-pipeline-row">
+    <div class="pipeline-stage runtime-active active" data-stage="0">
+      <div class="pipeline-stage-header">
+        <div class="pipeline-stage-num r1">6</div>
+        <div class="pipeline-stage-title">Eval Loop</div>
+      </div>
+      <div class="pipeline-stage-desc">The giant switch in ceval.c - fetches and dispatches each opcode</div>
+    </div>
+    <div class="pipeline-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 5l7 7-7 7"/></svg></div>
+    <div class="pipeline-stage" data-stage="1">
+      <div class="pipeline-stage-header">
+        <div class="pipeline-stage-num r2">7</div>
+        <div class="pipeline-stage-title">Handlers</div>
+      </div>
+      <div class="pipeline-stage-desc">~160 case blocks of C code that implement each opcode</div>
+    </div>
+    <div class="pipeline-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 5l7 7-7 7"/></svg></div>
+    <div class="pipeline-stage" data-stage="2">
+      <div class="pipeline-stage-header">
+        <div class="pipeline-stage-num r3">8</div>
+        <div class="pipeline-stage-title">Frame Stack</div>
+      </div>
+      <div class="pipeline-stage-desc">Call stack of frames, each with its own locals and value stack</div>
+    </div>
+  </div>
+
+  <div class="slide-detail-card" id="exec-pipeline-detail">
+    <div class="slide-detail-top" id="exec-pipeline-detail-top"></div>
+    <div class="slide-detail-body">
+      <div class="slide-detail-input">
+        <div class="slide-detail-label" id="exec-pipeline-input-label">Input</div>
+        <div class="slide-detail-pre" id="exec-pipeline-input-code"></div>
+      </div>
+      <div class="slide-detail-output">
+        <div class="slide-detail-label" id="exec-pipeline-output-label">Output</div>
+        <div class="slide-detail-pre" id="exec-pipeline-output-code"></div>
+      </div>
+    </div>
+  </div>
+
+  <aside class="notes">
+    This is where it clicks for most people. Python isn't magic - it's a C program running a loop.
+    The "giant switch statement" description always gets a reaction. It's both more mundane and more
+    elegant than people expect. The frame object detail matters because it's how Python implements
+    closures, generators, and the call stack. Handlers are the real implementation - clicking through
+    shows the actual C pseudocode behind each opcode.
+  </aside>
+</section>
+
+<!-- ============ SLIDE 2c: RUNTIME INFRASTRUCTURE ============ -->
+<section>
+  <h2 class="gradient-heading" style="background: linear-gradient(135deg, #facc15, #a3e635); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">Runtime Infrastructure</h2>
+  <p style="color: #7a8ba8; font-size: 0.55em; margin-bottom: 0.3em;">Always running underneath - the object system and memory machinery that make everything else work</p>
+
+  <div class="pipeline-phase-label infra">Runtime Infrastructure</div>
+  <div class="pipeline-phase-divider"></div>
+
+  <div class="pipeline-row" id="infra-pipeline-row">
+    <div class="pipeline-stage infra-active active" data-stage="0">
+      <div class="pipeline-stage-header">
+        <div class="pipeline-stage-num i1">9</div>
+        <div class="pipeline-stage-title">Object Layer</div>
+      </div>
+      <div class="pipeline-stage-desc">Everything is a PyObject - type slots, refcounting, dunder dispatch</div>
+    </div>
+    <div class="pipeline-arrow" style="color: #5a6a7f;"><span style="font-size: 0.6em; padding-top: 0.4em;">&amp;</span></div>
+    <div class="pipeline-stage" data-stage="1">
+      <div class="pipeline-stage-header">
+        <div class="pipeline-stage-num i2">10</div>
+        <div class="pipeline-stage-title">Memory &amp; GIL</div>
+      </div>
+      <div class="pipeline-stage-desc">Allocator arenas, GC cycle collector, and the Global Interpreter Lock</div>
+    </div>
+  </div>
+
+  <div class="slide-detail-card" id="infra-pipeline-detail">
+    <div class="slide-detail-top" id="infra-pipeline-detail-top"></div>
+    <div class="slide-detail-body">
+      <div class="slide-detail-input">
+        <div class="slide-detail-label" id="infra-pipeline-input-label">Input</div>
+        <div class="slide-detail-pre" id="infra-pipeline-input-code"></div>
+      </div>
+      <div class="slide-detail-output">
+        <div class="slide-detail-label" id="infra-pipeline-output-label">Output</div>
+        <div class="slide-detail-pre" id="infra-pipeline-output-code"></div>
+      </div>
+    </div>
+  </div>
+
+  <aside class="notes">
+    These two stages aren't sequential - they run in parallel beneath everything else.
+    The object layer is the single most important concept: everything is a PyObject. When someone
+    says "Python is slow because everything is an object" - this is literally what they mean. Every
+    integer carries a refcount and a type pointer. The GIL is the thing everyone has an opinion about
+    and half the room has never actually been bitten by. The free-threaded build is the biggest change
+    to CPython in decades.
+  </aside>
+</section>
+
+<!-- ============ SLIDE 2d: HONOURABLE MENTIONS ============ -->
+<section>
+  <h2 style="font-size: 1.3em; font-weight: 700; color: var(--r-heading-color); margin-bottom: 0.15em;">Honourable Mentions</h2>
+
+  <ul style="list-style: none; margin: 0; padding: 0; text-align: left; max-width: 900px; margin: 0 auto;">
+    <li style="margin-bottom: 0.35em; font-size: 0.52em; line-height: 1.5;">
+      <strong style="color: #e0e0e0;">It&rsquo;s all C under the hood</strong> <span style="color: var(--dim);">-</span>
+      <span style="color: #7a8ba8;">CPython is ~500k lines of C compiled to a native binary. Your Python never becomes machine code; it stays as bytecode that this C program interprets.</span>
+    </li>
+    <li style="margin-bottom: 0.35em; font-size: 0.52em; line-height: 1.5;">
+      <strong style="color: #e0e0e0;">CPython is not the only Python</strong> <span style="color: var(--dim);">-</span>
+      <span style="color: #7a8ba8;">PyPy (JIT), Cython (AOT to C), Jython (JVM), IronPython (.NET). Everything in this talk is specific to CPython - the reference implementation that 95%+ of people use.</span>
+    </li>
+    <li style="margin-bottom: 0.35em; font-size: 0.52em; line-height: 1.5;">
+      <strong style="color: #e0e0e0;">What&rsquo;s new in 3.13+ / 3.14</strong> <span style="color: var(--dim);">-</span>
+      <span style="color: #7a8ba8;">Free-threaded mode (PEP 703) removes the GIL with per-object locks. Copy-and-patch JIT stitches pre-compiled machine code templates for hot bytecodes. Both opt-in and experimental.</span>
+    </li>
+    <li style="margin-bottom: 0.35em; font-size: 0.52em; line-height: 1.5;">
+      <strong style="color: #e0e0e0;">You can inspect all of this yourself</strong> <span style="color: var(--dim);">-</span>
+      <span style="color: #7a8ba8;"><code>dis.dis(fn)</code>, <code>ast.dump(ast.parse(src))</code>, <code>sys.getrefcount(obj)</code>, <code>id(obj)</code>, <code>type(obj).__mro__</code>, <code>gc.get_referrers(obj)</code>. Python gives you introspection into almost everything in the pipeline.</span>
+    </li>
+    <li style="font-size: 0.52em; line-height: 1.5;">
+      <strong style="color: #e0e0e0;">A note on terminology</strong> <span style="color: var(--dim);">-</span>
+      <span style="color: #7a8ba8;">The <em style="color: var(--accent2);">Python VM</em> is the abstract machine (eval loop + value stack + frame stack). <em style="color: var(--accent2);">CPython</em> is the concrete C implementation of that VM plus everything around it (compiler, object system, GC, GIL). The VM is the spec; CPython is the reality.</span>
+    </li>
+  </ul>
+
+  <aside class="notes">
+    This is the "things I want to say but don't have time to build a full slide for" slide.
+    The "it's all C" point is worth hammering - people genuinely don't realise that python3 is
+    just a compiled C program. The alternative implementations point heads off the "but what about
+    PyPy?" question. The 3.13+ content is timely and will get reactions. The introspection tools
+    are a practical takeaway - encourage people to actually try dis.dis() after the talk.
+    The terminology card clears up confusion before Part B's discussion - people often conflate
+    "the VM" with "CPython" and it muddies the abstraction debate.
+  </aside>
+</section>
+
+<!-- ============ SLIDE 7: PHILOSOPHY / DISCUSSION ============ -->
+<section>
+  <h2>So... Did We Need to Know Any of That?</h2>
+  <p class="tagline"><strong style="color: #e0e0e0; font-style: normal;">Joel Spolsky&rsquo;s Law:</strong> all non-trivial abstractions leak. The question is <em>when</em>.</p>
+
+
+
+  <h3 style="margin-top: 0.5em;">Discussion Starters</h3>
+  <ul class="prompt-list">
+    <li>Has a leaky abstraction ever cost you? Has deep knowledge of something ever saved you?</li>
+    <li>What tools is it worth understanding better and what do we? LLMs, DBs, OSs, networking, cryptography...?</li>
+    <li>Are there some good rules of thumb for when to understand something and when to not?</li>
+    <li>How deep does one go - is it worth learning about the spin of the electrons in the CPU?</li>
+
+  </ul>
+
+  <aside class="notes">
+    This is the slide that earns its keep. The entire internals tour was setup for this conversation.
+    Don't rush the table - let people react. The car analogy lands well. The LLM question is deliberately
+    provocative. The goal isn't to resolve the debate, it's to surface it. Leave plenty of time for discussion.
+    Closing position: curiosity-driven depth beats mandate-driven depth. You don't need to know all of this.
+    But the people who do tend to make better architectural decisions, debug faster, and mentor more effectively.
+  </aside>
+</section>
+
+</div><!-- .slides -->
+</div><!-- .reveal -->
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    slideNumber: 'c/t',
+    showNotes: false,
+    width: 1280,
+    height: 720,
+    margin: 0.08,
+    transition: 'fade',
+    transitionSpeed: 'fast',
+    // Keyboard: 's' opens speaker notes view
+  });
+</script>
+
+<script>
+(function() {
+  var pipelineStages = [
+    {
+      title: "Stage 1: Tokenizer (Lexer)",
+      desc: "The tokenizer reads raw source characters and splits them into tokens \u2014 the smallest meaningful units. It handles indentation, recognizes keywords, operators, literals, and names.",
+      inputLabel: "Source Code",
+      outputLabel: "Token Stream",
+      input:
+        '<span class="cm"># Your Python source</span>\n' +
+        '<span class="tok">x</span> <span style="color:#ffa657">=</span> <span class="num">42</span> <span style="color:#ffa657">+</span> <span class="tok">y</span>',
+      output:
+        '<span class="tok">NAME</span>      <span class="str">\'x\'</span>        <span class="dim">(1,0)-(1,1)</span>\n' +
+        '<span class="tok">OP</span>        <span class="str">\'=\'</span>        <span class="dim">(1,2)-(1,3)</span>\n' +
+        '<span class="tok">NUMBER</span>    <span class="str">\'42\'</span>       <span class="dim">(1,4)-(1,6)</span>\n' +
+        '<span class="tok">OP</span>        <span class="str">\'+\'</span>        <span class="dim">(1,7)-(1,8)</span>\n' +
+        '<span class="tok">NAME</span>      <span class="str">\'y\'</span>        <span class="dim">(1,9)-(1,10)</span>\n' +
+        '<span class="tok">NEWLINE</span>   <span class="str">\'\\n\'</span>       <span class="dim">(1,10)-(1,11)</span>\n' +
+        '<span class="tok">ENDMARKER</span> <span class="str">\'\'</span>         <span class="dim">(2,0)-(2,0)</span>'
+    },
+    {
+      title: "Stage 2: PEG Parser \u2192 AST",
+      desc: "The PEG parser consumes the token stream and builds an Abstract Syntax Tree. Each node represents a syntactic construct: assignments, binary ops, literals, names. Inspect with <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">ast.dump()</code>.",
+      inputLabel: "Token Stream",
+      outputLabel: "Abstract Syntax Tree",
+      input:
+        '<span class="tok">NAME</span>      <span class="str">\'x\'</span>\n' +
+        '<span class="tok">OP</span>        <span class="str">\'=\'</span>\n' +
+        '<span class="tok">NUMBER</span>    <span class="str">\'42\'</span>\n' +
+        '<span class="tok">OP</span>        <span class="str">\'+\'</span>\n' +
+        '<span class="tok">NAME</span>      <span class="str">\'y\'</span>\n' +
+        '<span class="tok">NEWLINE</span>   <span class="str">\'\\n\'</span>\n' +
+        '<span class="tok">ENDMARKER</span>',
+      output:
+        '<span class="node">Module</span>(body=[\n' +
+        '  <span class="node">Assign</span>(\n' +
+        '    targets=[\n' +
+        '      <span class="node">Name</span>(id=<span class="str">\'x\'</span>, ctx=<span class="fn">Store</span>())\n' +
+        '    ],\n' +
+        '    value=<span class="node">BinOp</span>(\n' +
+        '      left=<span class="node">Constant</span>(value=<span class="num">42</span>),\n' +
+        '      op=<span class="fn">Add</span>(),\n' +
+        '      right=<span class="node">Name</span>(id=<span class="str">\'y\'</span>, ctx=<span class="fn">Load</span>())\n' +
+        '    )\n' +
+        '  )\n' +
+        '])'
+    },
+    {
+      title: "Stage 3: AST Optimizer",
+      desc: "CPython makes a pass over the AST for <strong>constant folding</strong>: if both sides of an operation are constants, compute at compile time. Since <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">y</code> isn't constant here, nothing changes. But <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">3 + 4</code> would fold to <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">7</code>.",
+      inputLabel: "AST (before)",
+      outputLabel: "AST (after \u2014 unchanged here)",
+      input:
+        '<span class="node">Assign</span>(\n' +
+        '  targets=[<span class="node">Name</span>(id=<span class="str">\'x\'</span>)],\n' +
+        '  value=<span class="node">BinOp</span>(\n' +
+        '    left=<span class="node">Constant</span>(value=<span class="num">42</span>),\n' +
+        '    op=<span class="fn">Add</span>(),\n' +
+        '    right=<span class="node">Name</span>(id=<span class="str">\'y\'</span>)\n' +
+        '  )\n' +
+        ')\n\n' +
+        '<span class="cm">\u2500\u2500 Can\'t fold: y is not a constant</span>',
+      output:
+        '<span class="node">Assign</span>(\n' +
+        '  targets=[<span class="node">Name</span>(id=<span class="str">\'x\'</span>)],\n' +
+        '  value=<span class="node">BinOp</span>(\n' +
+        '    left=<span class="node">Constant</span>(value=<span class="num">42</span>),\n' +
+        '    op=<span class="fn">Add</span>(),\n' +
+        '    right=<span class="node">Name</span>(id=<span class="str">\'y\'</span>)\n' +
+        '  )\n' +
+        ')\n\n' +
+        '<span class="cm">\u2500\u2500 No change (nothing to optimize)</span>\n' +
+        '<span class="cm">\u2500\u2500 If it were 40+2, it\'d become Constant(42)</span>'
+    },
+    {
+      title: "Stage 4: Bytecode Compiler",
+      desc: "The compiler walks the AST depth-first and emits <strong>bytecode</strong> \u2014 instructions for CPython's stack-based VM. Each instruction is an opcode + optional arg. Use <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">dis.dis()</code> to inspect.",
+      inputLabel: "AST",
+      outputLabel: "Bytecode (dis output)",
+      input:
+        '<span class="node">Assign</span>(\n' +
+        '  targets=[\n' +
+        '    <span class="node">Name</span>(id=<span class="str">\'x\'</span>, ctx=<span class="fn">Store</span>())\n' +
+        '  ],\n' +
+        '  value=<span class="node">BinOp</span>(\n' +
+        '    left=<span class="node">Constant</span>(value=<span class="num">42</span>),\n' +
+        '    op=<span class="fn">Add</span>(),\n' +
+        '    right=<span class="node">Name</span>(id=<span class="str">\'y\'</span>, ctx=<span class="fn">Load</span>())\n' +
+        '  )\n' +
+        ')',
+      output:
+        '<span class="dim">  offset  opcode            arg</span>\n' +
+        '<span class="dim">  ------  ----------------  -----</span>\n' +
+        '  <span class="num">0</span>       <span style="color:#60a5fa">LOAD_CONST</span>        <span style="color:#ffa657">42</span>\n' +
+        '  <span class="num">2</span>       <span style="color:#60a5fa">LOAD_NAME</span>         <span style="color:#ffa657">\'y\'</span>\n' +
+        '  <span class="num">4</span>       <span style="color:#60a5fa">BINARY_ADD</span>\n' +
+        '  <span class="num">6</span>       <span style="color:#60a5fa">STORE_NAME</span>        <span style="color:#ffa657">\'x\'</span>\n' +
+        '  <span class="num">8</span>       <span style="color:#60a5fa">RETURN_CONST</span>      <span style="color:#ffa657">None</span>\n\n' +
+        '<span class="cm">\u2500\u2500 Stack trace:</span>\n' +
+        '<span class="cm">\u2500\u2500 LOAD_CONST 42   \u2192 stack: [42]</span>\n' +
+        '<span class="cm">\u2500\u2500 LOAD_NAME \'y\'   \u2192 stack: [42, y]</span>\n' +
+        '<span class="cm">\u2500\u2500 BINARY_ADD      \u2192 stack: [42+y]</span>\n' +
+        '<span class="cm">\u2500\u2500 STORE_NAME \'x\'  \u2192 stack: []  (x = result)</span>'
+    },
+    {
+      title: "Stage 5: .pyc Serialization",
+      desc: "The code object is serialized using <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">marshal</code> and written to <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">__pycache__/</code>. On re-import, CPython checks freshness and skips compilation if the .pyc is current.",
+      inputLabel: "Code Object",
+      outputLabel: ".pyc File Structure",
+      input:
+        '<span class="node">code</span>(\n' +
+        '  co_consts    = (<span class="num">42</span>, <span class="str">None</span>),\n' +
+        '  co_names     = (<span class="str">\'y\'</span>, <span class="str">\'x\'</span>),\n' +
+        '  co_code      = <span class="str">b\'\\x64\\x00\\x65...\'</span>,\n' +
+        '  co_stacksize = <span class="num">2</span>,\n' +
+        '  co_filename  = <span class="str">\'example.py\'</span>,\n' +
+        '  co_name      = <span class="str">\'&lt;module&gt;\'</span>,\n' +
+        ')',
+      output:
+        '<span class="dim">__pycache__/example.cpython-312.pyc</span>\n\n' +
+        '<span class="cm">\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510</span>\n' +
+        '<span class="cm">\u2502</span> <span class="tok">Magic Number</span>  <span class="num">0x0D0D0A</span> + ver  <span class="cm">\u2502</span>  <span class="dim">4 bytes</span>\n' +
+        '<span class="cm">\u2502</span> <span class="tok">Flags</span>         <span class="num">0x00000000</span>     <span class="cm">\u2502</span>  <span class="dim">4 bytes</span>\n' +
+        '<span class="cm">\u2502</span> <span class="tok">Timestamp</span>     <span class="num">1713000000</span>     <span class="cm">\u2502</span>  <span class="dim">4 bytes</span>\n' +
+        '<span class="cm">\u2502</span> <span class="tok">Source Size</span>   <span class="num">14</span>             <span class="cm">\u2502</span>  <span class="dim">4 bytes</span>\n' +
+        '<span class="cm">\u251c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2524</span>\n' +
+        '<span class="cm">\u2502</span> <span style="color:#60a5fa">marshal(code_object)</span>           <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>   bytecode + consts + names    <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>   + line table + metadata      <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518</span>'
+    }
+  ];
+
+  var stageEls = document.querySelectorAll('#pipeline-row .pipeline-stage');
+  var detailCard = document.getElementById('pipeline-detail');
+  var detailTop = document.getElementById('pipeline-detail-top');
+  var inputLabel = document.getElementById('pipeline-input-label');
+  var outputLabel = document.getElementById('pipeline-output-label');
+  var inputCode = document.getElementById('pipeline-input-code');
+  var outputCode = document.getElementById('pipeline-output-code');
+
+  function showPipelineStage(idx) {
+    stageEls.forEach(function(s) { s.classList.remove('active'); });
+    stageEls[idx].classList.add('active');
+
+    var s = pipelineStages[idx];
+    detailTop.innerHTML = '<div class="phase-tag">Compilation</div>' +
+      '<h3>' + s.title + '</h3>' +
+      '<p>' + s.desc + '</p>';
+    inputLabel.textContent = s.inputLabel;
+    outputLabel.textContent = s.outputLabel;
+    inputCode.innerHTML = s.input;
+    outputCode.innerHTML = s.output;
+
+    detailCard.classList.remove('fade-in');
+    void detailCard.offsetWidth;
+    detailCard.classList.add('fade-in');
+  }
+
+  stageEls.forEach(function(el, i) {
+    el.addEventListener('click', function(e) {
+      e.stopPropagation();
+      showPipelineStage(i);
+    });
+  });
+
+  // Initialize with first stage
+  showPipelineStage(0);
+})();
+</script>
+
+<script>
+(function() {
+  var execStages = [
+    {
+      title: "Stage 6: The Evaluation Loop (ceval.c)",
+      desc: "CPython\u2019s heartbeat \u2014 a massive <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">switch</code> inside <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">_PyEval_EvalFrameDefault()</code>. It fetches the next bytecode, dispatches to the handler, manipulates the value stack, and loops. CPython 3.12+ uses computed gotos to avoid switch overhead.",
+      inputLabel: "Bytecode Instructions",
+      outputLabel: "Eval Loop Dispatch (C pseudocode)",
+      input:
+        '<span class="cm">\u2500\u2500 The VM fetches instructions one by one</span>\n' +
+        '<span class="cm">\u2500\u2500 from the code object\u2019s co_code bytes:</span>\n\n' +
+        '  <span class="bc">LOAD_CONST</span>   <span class="arg">0</span>   <span class="cm">\u2192 co_consts[0] = 42</span>\n' +
+        '  <span class="bc">LOAD_NAME</span>    <span class="arg">0</span>   <span class="cm">\u2192 co_names[0]  = \'y\'</span>\n' +
+        '  <span class="bc">BINARY_ADD</span>\n' +
+        '  <span class="bc">STORE_NAME</span>   <span class="arg">1</span>   <span class="cm">\u2192 co_names[1]  = \'x\'</span>\n' +
+        '  <span class="bc">RETURN_CONST</span> <span class="arg">1</span>   <span class="cm">\u2192 co_consts[1] = None</span>\n\n' +
+        '<span class="cm">\u2500\u2500 Each opcode is a 1-byte int (e.g. 100)</span>\n' +
+        '<span class="cm">\u2500\u2500 The arg is an index into a table</span>',
+      output:
+        '<span class="cm">// Python/ceval.c  (simplified)</span>\n' +
+        '<span class="kw">for</span> (;;) {\n' +
+        '  opcode = <span class="fn">NEXTOP</span>();\n' +
+        '  oparg  = <span class="fn">NEXTARG</span>();\n\n' +
+        '  <span class="kw">switch</span> (opcode) {\n\n' +
+        '    <span class="kw">case</span> <span class="bc">LOAD_CONST</span>:\n' +
+        '      value = co_consts[oparg];  <span class="cm">// 42</span>\n' +
+        '      <span class="fn">PUSH</span>(value);               <span class="cm">// \u2192 stack</span>\n' +
+        '      <span class="kw">break</span>;\n\n' +
+        '    <span class="kw">case</span> <span class="bc">LOAD_NAME</span>:\n' +
+        '      name = co_names[oparg];    <span class="cm">// \'y\'</span>\n' +
+        '      value = <span class="fn">lookup</span>(locals, globals, builtins, name);\n' +
+        '      <span class="fn">PUSH</span>(value);\n' +
+        '      <span class="kw">break</span>;\n\n' +
+        '    <span class="kw">case</span> <span class="bc">BINARY_ADD</span>:\n' +
+        '      right = <span class="fn">POP</span>();  left = <span class="fn">POP</span>();\n' +
+        '      result = <span class="fn">PyNumber_Add</span>(left, right);\n' +
+        '      <span class="fn">PUSH</span>(result);\n' +
+        '      <span class="kw">break</span>;\n\n' +
+        '    <span class="kw">case</span> <span class="bc">STORE_NAME</span>:\n' +
+        '      value = <span class="fn">POP</span>();\n' +
+        '      <span class="fn">PyDict_SetItem</span>(locals, <span class="str">"x"</span>, value);\n' +
+        '      <span class="kw">break</span>;\n' +
+        '  }\n' +
+        '}'
+    },
+    {
+      title: "Stage 7: Opcode Handlers",
+      desc: "Each opcode has a dedicated C handler inside the eval loop\u2019s switch. Some are 2\u20133 lines, others are complex. In 3.12+, handlers are defined in <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">Python/bytecodes.c</code> and code-generated. The specializing interpreter rewrites opcodes at runtime (e.g. <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">BINARY_ADD</code> \u2192 <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">BINARY_ADD_INT</code>).",
+      inputLabel: "Handler Anatomy (categories)",
+      outputLabel: "Real handlers for x = 42 + y",
+      input:
+        '<span class="cm">\u2500\u2500 ~160 handlers, roughly grouped:</span>\n\n' +
+        '<span class="tok">Stack ops</span>       <span class="dim">simple, 2-3 lines each</span>\n' +
+        '  <span class="bc">LOAD_CONST</span>    push co_consts[arg]\n' +
+        '  <span class="bc">LOAD_FAST</span>     push locals[arg]\n' +
+        '  <span class="bc">POP_TOP</span>       discard top of stack\n\n' +
+        '<span class="tok">Arithmetic</span>     <span class="dim">delegate to PyObject C API</span>\n' +
+        '  <span class="bc">BINARY_ADD</span>    \u2192 <span class="fn">PyNumber_Add</span>()\n' +
+        '  <span class="bc">COMPARE_OP</span>    \u2192 <span class="fn">PyObject_RichCompare</span>()\n\n' +
+        '<span class="tok">Control flow</span>   <span class="dim">move the instruction pointer</span>\n' +
+        '  <span class="bc">JUMP_FORWARD</span>  ip += arg\n' +
+        '  <span class="bc">POP_JUMP_IF_FALSE</span>  conditional jump\n\n' +
+        '<span class="tok">Calls</span>          <span class="dim">complex \u2014 create frames, bind args</span>\n' +
+        '  <span class="bc">CALL</span>          set up new frame\n' +
+        '  <span class="bc">RETURN_VALUE</span>  pop frame, push result',
+      output:
+        '<span class="cm">\u2500\u2500 What fires for each bytecode in x = 42 + y:</span>\n\n' +
+        '<span class="bc">LOAD_CONST</span> <span class="arg">42</span>\n' +
+        '<span class="kw">case</span> LOAD_CONST:\n' +
+        '  value = <span class="fn">GETITEM</span>(co_consts, oparg); <span class="cm">// fast tuple index</span>\n' +
+        '  <span class="fn">Py_INCREF</span>(value);       <span class="cm">// bump refcount</span>\n' +
+        '  <span class="fn">PUSH</span>(value);            <span class="cm">// that\u2019s it \u2014 3 lines</span>\n\n' +
+        '<span class="bc">LOAD_NAME</span> <span class="arg">\'y\'</span>\n' +
+        '<span class="kw">case</span> LOAD_NAME:\n' +
+        '  name = <span class="fn">GETITEM</span>(co_names, oparg);\n' +
+        '  v = <span class="fn">PyDict_GetItem</span>(locals, name);  <span class="cm">// try locals</span>\n' +
+        '  <span class="kw">if</span> (!v) v = <span class="fn">PyDict_GetItem</span>(globals, name);\n' +
+        '  <span class="kw">if</span> (!v) v = <span class="fn">PyDict_GetItem</span>(builtins, name);\n' +
+        '  <span class="kw">if</span> (!v) <span class="kw">goto</span> <span class="op">name_error</span>;   <span class="cm">// NameError!</span>\n' +
+        '  <span class="fn">PUSH</span>(v);\n\n' +
+        '<span class="bc">BINARY_ADD</span>\n' +
+        '<span class="kw">case</span> BINARY_ADD:\n' +
+        '  right = <span class="fn">POP</span>();  left = <span class="fn">TOP</span>();\n' +
+        '  result = <span class="fn">PyNumber_Add</span>(left, right);\n' +
+        '  <span class="fn">Py_DECREF</span>(left);  <span class="fn">Py_DECREF</span>(right);\n' +
+        '  <span class="fn">SET_TOP</span>(result);  <span class="cm">// replace top</span>'
+    },
+    {
+      title: "Stage 8: Frame Stack &amp; Call Stack",
+      desc: "interactive",
+      isInteractive: true
+    }
+  ];
+
+  // Frame Stack demo data (adapted to x = 42 + y)
+  var fsdSourceLines = [
+    { code: '<span class="kw">def</span> <span class="fn">compute</span>(y):', line: 1 },
+    { code: '    x <span class="op">=</span> <span class="num">42</span> <span class="op">+</span> y', line: 2 },
+    { code: '    <span class="kw">return</span> x', line: 3 },
+    { code: '', line: 4 },
+    { code: 'result <span class="op">=</span> <span class="fn">compute</span>(<span class="num">10</span>)', line: 5 }
+  ];
+
+  var fsdSteps = [
+    {
+      activeLine: 1,
+      frames: [
+        { id: 'module', label: '&lt;module&gt;', cls: 'fsd-module', locals: {}, vstack: [] }
+      ],
+      narration: '<div class="fsd-narr-step">CPython creates <span class="fsd-hl">Frame 1</span> for the module scope. The eval loop begins executing the module\'s bytecode.</div>'
+    },
+    {
+      activeLine: 1,
+      frames: [
+        { id: 'module', label: '&lt;module&gt;', cls: 'fsd-module', locals: { 'compute': '&lt;fn&gt;' }, vstack: [] }
+      ],
+      narration: '<div class="fsd-narr-step"><span class="fsd-opcode">MAKE_FUNCTION</span> creates a function object for <code>compute</code>.</div><div class="fsd-narr-step"><span class="fsd-opcode">STORE_NAME</span> binds it to the name <code>compute</code> in module locals.</div>'
+    },
+    {
+      activeLine: 5,
+      frames: [
+        { id: 'module', label: '&lt;module&gt;', cls: 'fsd-module', locals: { 'compute': '&lt;fn&gt;' }, vstack: ['compute', '10'] }
+      ],
+      narration: '<div class="fsd-narr-step">Line 5: <code>result = compute(10)</code>. Push the function and its argument:</div><div class="fsd-narr-step"><span class="fsd-opcode">LOAD_NAME</span> <code>compute</code><br><span class="fsd-opcode">LOAD_CONST</span> <code>10</code></div>'
+    },
+    {
+      activeLine: 2,
+      frames: [
+        { id: 'module', label: '&lt;module&gt;', cls: 'fsd-module', locals: { 'compute': '&lt;fn&gt;' }, vstack: [], inactive: true },
+        { id: 'compute', label: 'compute()', cls: 'fsd-fn', locals: { 'y': '10' }, vstack: [] }
+      ],
+      narration: '<div class="fsd-narr-step"><span class="fsd-opcode">CALL</span> fires! CPython:</div><div class="fsd-narr-step">1. Pops function + arg off the module\'s stack<br>2. Creates <span class="fsd-hl">Frame 2</span> for <code>compute</code><br>3. Binds <code>y=10</code> in its locals<br>4. Eval loop switches to Frame 2\'s bytecode</div>'
+    },
+    {
+      activeLine: 2,
+      frames: [
+        { id: 'module', label: '&lt;module&gt;', cls: 'fsd-module', locals: { 'compute': '&lt;fn&gt;' }, vstack: [], inactive: true },
+        { id: 'compute', label: 'compute()', cls: 'fsd-fn', locals: { 'y': '10' }, vstack: ['42', '10'] }
+      ],
+      narration: '<div class="fsd-narr-step">Inside <code>compute</code>, executing <code>x = 42 + y</code>:</div><div class="fsd-narr-step"><span class="fsd-opcode">LOAD_CONST</span> <code>42</code> \u2192 pushes 42<br><span class="fsd-opcode">LOAD_FAST</span> <code>y</code> \u2192 pushes 10</div>'
+    },
+    {
+      activeLine: 2,
+      frames: [
+        { id: 'module', label: '&lt;module&gt;', cls: 'fsd-module', locals: { 'compute': '&lt;fn&gt;' }, vstack: [], inactive: true },
+        { id: 'compute', label: 'compute()', cls: 'fsd-fn', locals: { 'y': '10' }, vstack: ['52'] }
+      ],
+      narration: '<div class="fsd-narr-step"><span class="fsd-opcode">BINARY_ADD</span> pops 42 and 10, computes <span class="fsd-hl">42 + 10 = 52</span>, pushes 52.</div>'
+    },
+    {
+      activeLine: 2,
+      frames: [
+        { id: 'module', label: '&lt;module&gt;', cls: 'fsd-module', locals: { 'compute': '&lt;fn&gt;' }, vstack: [], inactive: true },
+        { id: 'compute', label: 'compute()', cls: 'fsd-fn', locals: { 'y': '10', 'x': '52' }, vstack: [] }
+      ],
+      narration: '<div class="fsd-narr-step"><span class="fsd-opcode">STORE_FAST</span> pops 52 and stores it as <code>x = 52</code> in compute\'s locals.</div>'
+    },
+    {
+      activeLine: 3,
+      frames: [
+        { id: 'module', label: '&lt;module&gt;', cls: 'fsd-module', locals: { 'compute': '&lt;fn&gt;' }, vstack: [], inactive: true },
+        { id: 'compute', label: 'compute()', cls: 'fsd-fn', locals: { 'y': '10', 'x': '52' }, vstack: ['52'] }
+      ],
+      narration: '<div class="fsd-narr-step">Line 3: <code>return x</code></div><div class="fsd-narr-step"><span class="fsd-opcode">LOAD_FAST</span> <code>x</code> \u2192 pushes 52 onto the value stack, ready to return.</div>'
+    },
+    {
+      activeLine: 5,
+      pop: 'compute',
+      frames: [
+        { id: 'module', label: '&lt;module&gt;', cls: 'fsd-module', locals: { 'compute': '&lt;fn&gt;' }, vstack: ['52'] }
+      ],
+      narration: '<div class="fsd-narr-step"><span class="fsd-opcode">RETURN_VALUE</span> pops 52, <span class="fsd-hl">destroys Frame 2</span>.</div><div class="fsd-narr-step">The return value <span class="fsd-return-badge" style="background:#3b1f5e;color:#c4b5fd;">52</span> is pushed onto <strong>Frame 1\'s</strong> value stack. Eval loop resumes in the module.</div>'
+    },
+    {
+      activeLine: 5,
+      frames: [
+        { id: 'module', label: '&lt;module&gt;', cls: 'fsd-module', locals: { 'compute': '&lt;fn&gt;', 'result': '52' }, vstack: [] }
+      ],
+      narration: '<div class="fsd-narr-step"><span class="fsd-opcode">STORE_NAME</span> pops 52 and stores <code>result = 52</code>.</div><div class="fsd-narr-step"><span class="fsd-hl">Done!</span> The <code>x = 42 + y</code> computation ran inside <code>compute()</code>\'s frame, returned the result to the module, and the frame was cleaned up.</div>'
+    }
+  ];
+
+  var fsdCurrentStep = -1;
+  var fsdPrevFrameIds = [];
+  var fsdAutoInterval = null;
+
+  function fsdRenderSource() {
+    var el = document.getElementById('fsd-source');
+    if (!el) return;
+    el.innerHTML = fsdSourceLines.map(function(l) {
+      return '<div class="fsd-src-line" data-line="' + l.line + '"><span class="fsd-ln">' + l.line + '</span>' + (l.code || ' ') + '</div>';
+    }).join('');
+  }
+
+  function fsdBuildFrames(step) {
+    var el = document.getElementById('fsd-frames');
+    if (!el) return;
+    el.innerHTML = '';
+    step.frames.forEach(function(f, i) {
+      var div = document.createElement('div');
+      div.id = 'fsd-frame-' + f.id;
+      div.className = 'fsd-frame ' + f.cls;
+      if (f.inactive) div.classList.add('inactive');
+
+      var localsHtml = Object.keys(f.locals).length
+        ? Object.entries(f.locals).map(function(e) {
+            return '<div><span style="color:#7a8ba8">' + e[0] + '</span> <span style="color:#4a5568">=</span> <span style="color:#fbbf24">' + e[1] + '</span></div>';
+          }).join('')
+        : '<div style="color:#3a4560;font-style:italic;font-size:0.85em">empty</div>';
+
+      var vstackHtml = f.vstack.length
+        ? f.vstack.map(function(v) { return '<span class="fsd-vstack-item">' + v + '</span>'; }).join(' ')
+        : '<div style="color:#3a4560;font-style:italic;font-size:0.85em">empty</div>';
+
+      div.innerHTML =
+        '<div class="fsd-frame-hdr">' +
+          '<div class="fsd-frame-badge">F' + (i + 1) + '</div>' +
+          f.label +
+          (f.inactive ? '<span style="margin-left:auto;font-size:0.75em;color:#5a6a7f;font-weight:400">paused</span>' : '<span style="margin-left:auto;font-size:0.75em;color:#4ade80;font-weight:400">\u25cf running</span>') +
+        '</div>' +
+        '<div class="fsd-frame-body">' +
+          '<div class="fsd-frame-locals"><div class="fsd-frame-subtitle">Locals</div>' + localsHtml + '</div>' +
+          '<div class="fsd-frame-vstack"><div class="fsd-frame-subtitle">Value Stack</div>' + vstackHtml + '</div>' +
+        '</div>';
+      el.appendChild(div);
+      requestAnimationFrame(function() { requestAnimationFrame(function() { div.classList.add('visible'); }); });
+    });
+  }
+
+  function fsdRenderStep(idx) {
+    var step = fsdSteps[idx];
+    // Source highlight
+    document.querySelectorAll('.fsd-src-line').forEach(function(el) {
+      el.classList.remove('active');
+      if (parseInt(el.dataset.line) === step.activeLine) el.classList.add('active');
+    });
+    // Narration
+    var narrEl = document.getElementById('fsd-narration');
+    if (narrEl) narrEl.innerHTML = step.narration;
+    // Frames
+    var poppedId = step.pop;
+    if (poppedId) {
+      var poppedEl = document.getElementById('fsd-frame-' + poppedId);
+      if (poppedEl) { poppedEl.classList.add('popping'); poppedEl.classList.remove('visible'); }
+      setTimeout(function() { fsdBuildFrames(step); }, 380);
+    } else {
+      fsdBuildFrames(step);
+    }
+    fsdPrevFrameIds = step.frames.map(function(f) { return f.id; });
+    // Progress
+    var progEl = document.getElementById('fsd-progress');
+    if (progEl) progEl.style.width = ((idx / (fsdSteps.length - 1)) * 100) + '%';
+    var numEl = document.getElementById('fsd-step-num');
+    if (numEl) numEl.textContent = idx;
+    var nextBtn = document.getElementById('fsd-btn-next');
+    if (nextBtn) nextBtn.disabled = idx >= fsdSteps.length - 1;
+  }
+
+  function fsdNext() {
+    if (fsdCurrentStep >= fsdSteps.length - 1) return;
+    fsdCurrentStep++;
+    fsdRenderStep(fsdCurrentStep);
+  }
+  function fsdReset() {
+    fsdStopAuto();
+    fsdCurrentStep = -1;
+    fsdPrevFrameIds = [];
+    var framesEl = document.getElementById('fsd-frames');
+    if (framesEl) framesEl.innerHTML = '';
+    var narrEl = document.getElementById('fsd-narration');
+    if (narrEl) narrEl.innerHTML = '<div class="fsd-narr-step" style="color:#5a6a7f">Press <strong>Next Step</strong> to begin.</div>';
+    document.querySelectorAll('.fsd-src-line').forEach(function(el) { el.classList.remove('active'); });
+    var progEl = document.getElementById('fsd-progress');
+    if (progEl) progEl.style.width = '0%';
+    var numEl = document.getElementById('fsd-step-num');
+    if (numEl) numEl.textContent = '0';
+    var nextBtn = document.getElementById('fsd-btn-next');
+    if (nextBtn) nextBtn.disabled = false;
+    var autoBtn = document.getElementById('fsd-btn-auto');
+    if (autoBtn) autoBtn.textContent = 'Auto Play';
+  }
+  function fsdToggleAuto() {
+    if (fsdAutoInterval) { fsdStopAuto(); return; }
+    var autoBtn = document.getElementById('fsd-btn-auto');
+    if (autoBtn) autoBtn.textContent = 'Pause';
+    fsdAutoInterval = setInterval(function() {
+      if (fsdCurrentStep >= fsdSteps.length - 1) { fsdStopAuto(); return; }
+      fsdNext();
+    }, 1600);
+  }
+  function fsdStopAuto() {
+    clearInterval(fsdAutoInterval);
+    fsdAutoInterval = null;
+    var autoBtn = document.getElementById('fsd-btn-auto');
+    if (autoBtn) autoBtn.textContent = 'Auto Play';
+  }
+
+  // Build the Frame Stack demo HTML
+  function buildFrameStackDemo() {
+    return '<div class="slide-detail-top" style="padding:0.25em 0.5em 0.15em">' +
+      '<div class="phase-tag execution-tag">Execution</div>' +
+      '<h3>Stage 8: Frame Stack &amp; Call Stack</h3>' +
+      '<p>Every time CPython enters a new scope (module, function call, class body) it creates a <strong style="color:#e0e0e0">frame</strong> - a runtime workspace holding that scope\u2019s bytecode pointer, local variables, value stack, and a link back to the caller\u2019s frame. Frames stack up on calls and pop on returns. Step through below to watch it happen with <code style="color:#a78bfa;background:none;padding:0;font-size:0.9em">x = 42 + y</code>.</p>' +
+    '</div>' +
+    '<div class="fsd-layout">' +
+      '<div class="fsd-panel">' +
+        '<div class="fsd-panel-title">Source Code</div>' +
+        '<div class="fsd-source" id="fsd-source"></div>' +
+      '</div>' +
+      '<div class="fsd-panel">' +
+        '<div class="fsd-panel-title">Frame Stack <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;">bottom \u2192 top</span></div>' +
+        '<div class="fsd-frames" id="fsd-frames"></div>' +
+      '</div>' +
+      '<div class="fsd-panel">' +
+        '<div class="fsd-panel-title">What\u2019s Happening</div>' +
+        '<div class="fsd-narration-body" id="fsd-narration"><div class="fsd-narr-step" style="color:#5a6a7f">Press <strong>Next Step</strong> to begin.</div></div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="fsd-controls">' +
+      '<button class="fsd-btn" id="fsd-btn-reset" onclick="event.stopPropagation();">Reset</button>' +
+      '<button class="fsd-btn fsd-btn-primary" id="fsd-btn-next" onclick="event.stopPropagation();">Next Step \u2192</button>' +
+      '<div class="fsd-step-counter"><span id="fsd-step-num">0</span> / ' + (fsdSteps.length - 1) + '</div>' +
+      '<div class="fsd-progress-track"><div class="fsd-progress-fill" id="fsd-progress"></div></div>' +
+      '<button class="fsd-btn" id="fsd-btn-auto" onclick="event.stopPropagation();">Auto Play</button>' +
+    '</div>';
+  }
+
+  function initFrameStackDemo() {
+    fsdCurrentStep = -1;
+    fsdPrevFrameIds = [];
+    fsdAutoInterval = null;
+    fsdRenderSource();
+    // Bind buttons (onclick attributes handle stopPropagation, we add the logic here)
+    var nextBtn = document.getElementById('fsd-btn-next');
+    var resetBtn = document.getElementById('fsd-btn-reset');
+    var autoBtn = document.getElementById('fsd-btn-auto');
+    if (nextBtn) nextBtn.addEventListener('click', function(e) { e.stopPropagation(); fsdNext(); });
+    if (resetBtn) resetBtn.addEventListener('click', function(e) { e.stopPropagation(); fsdReset(); });
+    if (autoBtn) autoBtn.addEventListener('click', function(e) { e.stopPropagation(); fsdToggleAuto(); });
+  }
+
+  var execStageEls = document.querySelectorAll('#exec-pipeline-row .pipeline-stage');
+  var execDetailCard = document.getElementById('exec-pipeline-detail');
+  var execDetailTop = document.getElementById('exec-pipeline-detail-top');
+  var execInputLabel = document.getElementById('exec-pipeline-input-label');
+  var execOutputLabel = document.getElementById('exec-pipeline-output-label');
+  var execInputCode = document.getElementById('exec-pipeline-input-code');
+  var execOutputCode = document.getElementById('exec-pipeline-output-code');
+
+  // Track whether we're in demo mode to restore standard layout
+  var execInDemoMode = false;
+  var execStandardInnerHTML = execDetailCard.innerHTML;
+
+  function showExecStage(idx) {
+    execStageEls.forEach(function(s) { s.classList.remove('active'); });
+    execStageEls[idx].classList.add('active');
+    execStageEls[idx].classList.add('runtime-active');
+
+    fsdStopAuto();
+
+    var s = execStages[idx];
+
+    if (s.isInteractive) {
+      // Render the Frame Stack demo
+      execDetailCard.innerHTML = buildFrameStackDemo();
+      execInDemoMode = true;
+      initFrameStackDemo();
+    } else {
+      // Restore standard layout if needed
+      if (execInDemoMode) {
+        execDetailCard.innerHTML = execStandardInnerHTML;
+        execInDemoMode = false;
+        // Re-acquire element references
+        execDetailTop = document.getElementById('exec-pipeline-detail-top');
+        execInputLabel = document.getElementById('exec-pipeline-input-label');
+        execOutputLabel = document.getElementById('exec-pipeline-output-label');
+        execInputCode = document.getElementById('exec-pipeline-input-code');
+        execOutputCode = document.getElementById('exec-pipeline-output-code');
+      }
+      execDetailTop.innerHTML = '<div class="phase-tag execution-tag">Execution</div>' +
+        '<h3>' + s.title + '</h3>' +
+        '<p>' + s.desc + '</p>';
+      execInputLabel.textContent = s.inputLabel;
+      execOutputLabel.textContent = s.outputLabel;
+      execInputCode.innerHTML = s.input;
+      execOutputCode.innerHTML = s.output;
+    }
+
+    execDetailCard.classList.remove('fade-in');
+    void execDetailCard.offsetWidth;
+    execDetailCard.classList.add('fade-in');
+  }
+
+  execStageEls.forEach(function(el, i) {
+    el.addEventListener('click', function(e) {
+      e.stopPropagation();
+      showExecStage(i);
+    });
+  });
+
+  showExecStage(0);
+})();
+</script>
+
+<script>
+(function() {
+  var infraStages = [
+    {
+      title: "Stage 9: Object Layer &amp; Type System",
+      desc: "In CPython, <strong>everything</strong> is a <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">PyObject*</code> \u2014 a C struct with a reference count and a pointer to its type. Types themselves are objects. When <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">BINARY_ADD</code> runs, it calls <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">PyNumber_Add()</code>, which looks up the <code style=\"color:#7a8ba8;background:none;padding:0;font-size:0.9em\">nb_add</code> slot on the type. This slot dispatch is how dunder methods work at the C level.",
+      inputLabel: "PyObject Anatomy",
+      outputLabel: "What BINARY_ADD actually does",
+      input:
+        '<span class="cm">\u2500\u2500 Every Python object in memory:</span>\n\n' +
+        '<span class="node">PyObject</span> {\n' +
+        '  <span class="tok">ob_refcnt</span>   : Py_ssize_t  <span class="cm">\u2190 reference count</span>\n' +
+        '  <span class="tok">ob_type</span>     : PyTypeObject*  <span class="cm">\u2190 points to type</span>\n' +
+        '}\n\n' +
+        '<span class="cm">\u2500\u2500 An int like 42 is actually:</span>\n\n' +
+        '<span class="node">PyLongObject</span> {\n' +
+        '  <span class="tok">ob_refcnt</span>   = <span class="num">3</span>   <span class="cm">\u2190 3 things point to it</span>\n' +
+        '  <span class="tok">ob_type</span>     = &amp;<span class="fn">PyLong_Type</span>\n' +
+        '  <span class="tok">ob_digit</span>[]  = {<span class="num">42</span>}  <span class="cm">\u2190 the actual value</span>\n' +
+        '}\n\n' +
+        '<span class="cm">\u2500\u2500 Small ints (-5 to 256) are pre-allocated</span>\n' +
+        '<span class="cm">\u2500\u2500 and shared (singleton pattern).</span>',
+      output:
+        '<span class="cm">\u2500\u2500 BINARY_ADD triggers this chain:</span>\n\n' +
+        '<span class="num">1.</span> <span class="fn">PyNumber_Add</span>(left, right)\n' +
+        '      \u2502\n' +
+        '<span class="num">2.</span>    \u251c\u2500 Check left-><span class="tok">ob_type</span>-><span class="fn">tp_as_number</span>\n' +
+        '      \u2502       \u2514\u2500 <span class="fn">nb_add</span> slot exists?\n' +
+        '      \u2502\n' +
+        '<span class="num">3.</span>    \u251c\u2500 <span class="kw">if</span> left is <span class="fn">int</span>:\n' +
+        '      \u2502       call <span class="fn">long_add</span>(left, right)\n' +
+        '      \u2502           \u251c\u2500 Unbox digits\n' +
+        '      \u2502           \u251c\u2500 Do C-level addition\n' +
+        '      \u2502           \u2514\u2500 Box result \u2192 new <span class="node">PyLongObject</span>\n' +
+        '      \u2502\n' +
+        '<span class="num">4.</span>    \u251c\u2500 <span class="kw">if</span> left is <span class="fn">str</span>:\n' +
+        '      \u2502       call <span class="fn">unicode_concat</span>(left, right)\n' +
+        '      \u2502\n' +
+        '<span class="num">5.</span>    \u2514\u2500 <span class="kw">else</span>:\n' +
+        '              try left.<span class="fn">__add__</span>(right)\n' +
+        '              then right.<span class="fn">__radd__</span>(left)\n' +
+        '              or raise <span class="kw">TypeError</span>\n\n' +
+        '<span class="cm">\u2500\u2500 This is why 42 + "hi" raises TypeError:</span>\n' +
+        '<span class="cm">\u2500\u2500 int\'s nb_add doesn\'t know about str,</span>\n' +
+        '<span class="cm">\u2500\u2500 and str\'s __radd__ rejects int too.</span>'
+    },
+    {
+      title: "Stage 10: Memory Management &amp; the GIL",
+      desc: "CPython uses a <strong>3-tier memory allocator</strong>: OS arenas (256 KB) \u2192 pools (4 KB, one size class each) \u2192 blocks. Objects are freed by <strong>reference counting</strong> (instant, deterministic), but a <strong>cycle collector</strong> handles circular references. The <strong>GIL</strong> ensures only one thread runs bytecodes at a time. Python 3.13+ has an experimental free-threaded build (PEP 703).",
+      inputLabel: "Memory Allocator Architecture",
+      outputLabel: "Reference Counting + GIL",
+      input:
+        '<span class="cm">\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500 CPython Memory Layers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510</span>\n' +
+        '<span class="cm">\u2502                                     \u2502</span>\n' +
+        '<span class="cm">\u2502</span>  <span class="kw">Layer 3</span>  Object-specific caches     <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>           (int freelists, tuples)   <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>                  \u2502                   <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>  <span class="tok">Layer 2</span>  <span class="fn">pymalloc</span> (Objects/obmalloc.c) <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>           \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510      <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>           \u2502 <span class="cy">Arena</span> (256 KB)    \u2502      <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>           \u2502  \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502      <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>           \u2502  \u2502 <span class="pk">Pool</span> (4 KB)   \u2502 \u2502      <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>           \u2502  \u2502 size class=32 \u2502 \u2502      <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>           \u2502  \u2502 [blk][blk]... \u2502 \u2502      <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>           \u2502  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502      <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>           \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518      <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>                  \u2502                   <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span>  <span class="dim">Layer 1</span>  OS malloc / mmap           <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518</span>\n' +
+        '<span class="cm">\u2500\u2500 Objects \u2264512 bytes \u2192 pymalloc</span>\n' +
+        '<span class="cm">\u2500\u2500 Objects >512 bytes \u2192 direct malloc</span>',
+      output:
+        '<span class="cm">\u2500\u2500 REFERENCE COUNTING \u2500\u2500</span>\n\n' +
+        'a = <span class="num">42</span>           <span class="cm">ob_refcnt: 1</span>\n' +
+        'b = a            <span class="cm">ob_refcnt: 2  (shared!)</span>\n' +
+        '<span class="kw">del</span> a            <span class="cm">ob_refcnt: 1</span>\n' +
+        '<span class="kw">del</span> b            <span class="cm">ob_refcnt: 0 \u2192 FREE</span>\n\n' +
+        '<span class="cm">\u2500\u2500 But cycles need the GC:</span>\n' +
+        'a = [];  a.append(a)   <span class="cm">\u2190 refcnt never 0!</span>\n' +
+        '<span class="cm">\u2500\u2500 gc.collect() walks "generation" lists,</span>\n' +
+        '<span class="cm">\u2500\u2500 finds unreachable cycles, breaks them.</span>\n\n\n' +
+        '<span class="cm">\u2500\u2500 THE GIL \u2500\u2500</span>\n\n' +
+        '<span class="cm">\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510   \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510</span>\n' +
+        '<span class="cm">\u2502</span> <span class="pk">Thread 1</span> <span class="cm">\u2502   \u2502</span> <span class="cy">Thread 2</span> <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span> <span class="node">has GIL</span>  <span class="cm">\u2502   \u2502</span> <span class="dim">waiting</span>  <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span> run 100  <span class="cm">\u2502   \u2502          \u2502</span>\n' +
+        '<span class="cm">\u2502</span> bytecodes<span class="cm">\u2502   \u2502          \u2502</span>\n' +
+        '<span class="cm">\u2502</span>  ...tick <span class="cm">\u2502   \u2502          \u2502</span>\n' +
+        '<span class="cm">\u2502</span> <span class="kw">release</span> \u2500\u253c\u2500\u2500\u2192\u2502 <span class="node">acquire</span> <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2502</span> <span class="dim">waiting</span>  <span class="cm">\u2502   \u2502</span> run 100  <span class="cm">\u2502</span>\n' +
+        '<span class="cm">\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518   \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518</span>\n\n' +
+        '<span class="cm">\u2500\u2500 GIL released during I/O, C extensions</span>\n' +
+        '<span class="cm">\u2500\u2500 Python 3.13+: experimental no-GIL build</span>\n' +
+        '<span class="cm">\u2500\u2500   (free-threaded / PEP 703)</span>'
+    }
+  ];
+
+  var infraStageEls = document.querySelectorAll('#infra-pipeline-row .pipeline-stage');
+  var infraDetailCard = document.getElementById('infra-pipeline-detail');
+  var infraDetailTop = document.getElementById('infra-pipeline-detail-top');
+  var infraInputLabel = document.getElementById('infra-pipeline-input-label');
+  var infraOutputLabel = document.getElementById('infra-pipeline-output-label');
+  var infraInputCode = document.getElementById('infra-pipeline-input-code');
+  var infraOutputCode = document.getElementById('infra-pipeline-output-code');
+
+  function showInfraStage(idx) {
+    infraStageEls.forEach(function(s) { s.classList.remove('active'); });
+    infraStageEls[idx].classList.add('active');
+    infraStageEls[idx].classList.add('infra-active');
+
+    var s = infraStages[idx];
+    infraDetailTop.innerHTML = '<div class="phase-tag infra-tag">Runtime Infrastructure</div>' +
+      '<h3>' + s.title + '</h3>' +
+      '<p>' + s.desc + '</p>';
+    infraInputLabel.textContent = s.inputLabel;
+    infraOutputLabel.textContent = s.outputLabel;
+    infraInputCode.innerHTML = s.input;
+    infraOutputCode.innerHTML = s.output;
+
+    infraDetailCard.classList.remove('fade-in');
+    void infraDetailCard.offsetWidth;
+    infraDetailCard.classList.add('fade-in');
+  }
+
+  infraStageEls.forEach(function(el, i) {
+    el.addEventListener('click', function(e) {
+      e.stopPropagation();
+      showInfraStage(i);
+    });
+  });
+
+  showInfraStage(0);
+})();
+</script>
+</body>
+</html>
